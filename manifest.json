@@ -12,7 +12,7 @@
     "https://gmail.googleapis.com/*"
   ],
   "oauth2": {
-    "client_id": "PASTE_CLIENT_ID_HERE",
+    "client_id": "725873766573-ns0duda5jmd39sdasa7h7c26r5ja37mj.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/gmail.send"
     ]
