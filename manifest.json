@@ -1,0 +1,17 @@
+
+{
+  "manifest_version": 3,
+  "name": "BI Email Outreach",
+  "version": "1.0.0",
+  "description": "Bajwa Industries email outreach manager",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.googleapis.com/*"
+  ],
+  "action": {
+    "default_title": "BI Email Outreach",
+    "default_popup": "popup.html"
+  }
+}
