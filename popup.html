@@ -1,0 +1,60 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BI Email Outreach</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      width: 360px;
+      padding: 18px;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: #fff;
+    }
+    h2 { margin: 0 0 5px; color: #e5bd69; }
+    p { color: #bbb; font-size: 12px; }
+    label { display: block; margin-top: 14px; font-size: 12px; }
+    input, button {
+      width: 100%;
+      padding: 10px;
+      margin-top: 6px;
+      border-radius: 6px;
+      border: 1px solid #555;
+    }
+    input { background: #222; color: white; }
+    button {
+      background: #d6ad57;
+      color: #111;
+      font-weight: bold;
+      cursor: pointer;
+      border: 0;
+    }
+    #status { margin-top: 12px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>BI EMAIL OUTREACH</h2>
+  <p>Bajwa Industries | Email Manager</p>
+
+  <label>CSV Buyer List</label>
+  <input type="file" id="csvFile" accept=".csv">
+
+  <label>Email Subject</label>
+  <input type="text" id="subject" placeholder="Enter email subject">
+
+  <label>Email Message</label>
+  <input type="text" id="message" placeholder="Enter email message">
+
+  <label>Product Photos (Maximum 3)</label>
+  <input type="file" id="photos" accept="image/*" multiple>
+
+  <button id="saveBtn">Save Draft Settings</button>
+  <div id="status">Ready — no emails sent.</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
