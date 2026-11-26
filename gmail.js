@@ -1,71 +1,106 @@
 
-const BIEmail = {
-  async getToken() {
+const BIEmail = (() => {
+  function getToken() {
     return new Promise((resolve, reject) => {
-      chrome.identity.getAuthToken(
-        { interactive: true },
-        result => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-
-          if (!result || !result.token) {
-            reject(new Error("Google authorization failed."));
-            return;
-          }
-
-          resolve(result.token);
+      chrome.identity.getAuthToken({ interactive: true }, token => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
         }
-      );
+
+        if (!token) {
+          reject(new Error("Google authorization token not received."));
+          return;
+        }
+
+        resolve(token);
+      });
     });
-  },
+  }
 
-  async sendOneTest({ email, subject, message, photos = [] }) {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || "")) {
-      throw new Error("Invalid recipient email.");
-    }
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
 
-    if (!subject || !message) {
-      throw new Error("Subject and message are required.");
-    }
+      reader.onload = () => {
+        const result = reader.result;
+        resolve(result.split(",")[1]);
+      };
 
+      reader.onerror = () => reject(new Error("Could not read attachment."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function encodeSubject(subject) {
+    const bytes = new TextEncoder().encode(subject);
+    let binary = "";
+
+    bytes.forEach(byte => {
+      binary += String.fromCharCode(byte);
+    });
+
+    return "=?UTF-8?B?" + btoa(binary) + "?=";
+  }
+
+  function wrapBase64(value) {
+    return value.match(/.{1,76}/g)?.join("\r\n") || "";
+  }
+
+  async function sendOneTest({ email, subject, message, photos = [] }) {
     if (photos.length > 3) {
       throw new Error("Maximum 3 photos allowed.");
     }
 
-    const token = await this.getToken();
-    const boundary = "BI_" + crypto.randomUUID();
+    const token = await getToken();
+    const boundary = "BI_BOUNDARY_" + Date.now();
 
-    const headers = [
-      "To: " + email,
-      "Subject: " + this.encodeHeader(subject),
+    let mime = [
+      `To: ${email}`,
+      `Subject: ${encodeSubject(subject)}`,
       "MIME-Version: 1.0",
-      `Content-Type: multipart/mixed; boundary="${boundary}"`
-    ];
-
-    let mime = headers.join("\r\n") + "\r\n\r\n";
-
-    mime += `--${boundary}\r\n`;
-    mime += 'Content-Type: text/plain; charset="UTF-8"\r\n';
-    mime += "Content-Transfer-Encoding: base64\r\n\r\n";
-    mime += this.toBase64(message) + "\r\n";
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(
+        btoa(
+          Array.from(
+            new TextEncoder().encode(message),
+            byte => String.fromCharCode(byte)
+          ).join("")
+        )
+      )
+    ].join("\r\n");
 
     for (const photo of photos) {
-      const bytes = await photo.arrayBuffer();
-      const base64 = this.bytesToBase64(bytes);
+      if (!photo.type.startsWith("image/")) {
+        throw new Error("Only image attachments are allowed.");
+      }
 
-      mime += `--${boundary}\r\n`;
-      mime += `Content-Type: ${photo.type || "application/octet-stream"}; name="${photo.name}"\r\n`;
-      mime += "Content-Transfer-Encoding: base64\r\n";
-      mime += `Content-Disposition: attachment; filename="${photo.name}"\r\n\r\n`;
-      mime += base64.replace(/.{1,76}/g, "$&\r\n") + "\r\n";
+      const base64 = await fileToBase64(photo);
+      const safeName = photo.name.replace(/[\r\n"]/g, "_");
+
+      mime += [
+        "",
+        `--${boundary}`,
+        `Content-Type: ${photo.type}; name="${safeName}"`,
+        "Content-Transfer-Encoding: base64",
+        `Content-Disposition: attachment; filename="${safeName}"`,
+        "",
+        wrapBase64(base64)
+      ].join("\r\n");
     }
 
-    mime += `--${boundary}--`;
+    mime += `\r\n--${boundary}--`;
 
-    const raw = this.bytesToBase64(
-      new TextEncoder().encode(mime).buffer
+    const raw = btoa(
+      Array.from(
+        new TextEncoder().encode(mime),
+        byte => String.fromCharCode(byte)
+      ).join("")
     )
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
@@ -76,46 +111,26 @@ const BIEmail = {
       {
         method: "POST",
         headers: {
-          Authorization: "Bearer " + token,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({ raw })
       }
     );
 
-    const result = await response.json();
+    const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(result.error?.message || "Gmail sending failed.");
-    }
-
-    return {
-      success: true,
-      messageId: result.id,
-      recipient: email
-    };
-  },
-
-  encodeHeader(value) {
-    return "=?UTF-8?B?" + this.toBase64(value) + "?=";
-  },
-
-  toBase64(value) {
-    return btoa(
-      unescape(encodeURIComponent(value))
-    );
-  },
-
-  bytesToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-
-    for (let i = 0; i < bytes.length; i += 8192) {
-      binary += String.fromCharCode(
-        ...bytes.subarray(i, i + 8192)
+      throw new Error(
+        data.error?.message || `Gmail API error: ${response.status}`
       );
     }
 
-    return btoa(binary);
+    return {
+      recipient: email,
+      messageId: data.id
+    };
   }
-};
+
+  return { sendOneTest };
+})();
