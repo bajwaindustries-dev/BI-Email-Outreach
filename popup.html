@@ -18,14 +18,15 @@
     h2 { margin: 0 0 5px; color: #e5bd69; }
     p { color: #bbb; font-size: 12px; }
     label { display: block; margin-top: 14px; font-size: 12px; }
-    input, button {
+    input, textarea, button {
       width: 100%;
       padding: 10px;
       margin-top: 6px;
       border-radius: 6px;
       border: 1px solid #555;
     }
-    input { background: #222; color: white; }
+    input, textarea { background: #222; color: white; }
+    textarea { min-height: 90px; resize: vertical; }
     button {
       background: #d6ad57;
       color: #111;
@@ -34,6 +35,8 @@
       border: 0;
     }
     #status { margin-top: 12px; font-size: 12px; }
+    .consent { display: flex; gap: 8px; align-items: flex-start; }
+    .consent input { width: auto; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -43,18 +46,29 @@
   <label>CSV Buyer List</label>
   <input type="file" id="csvFile" accept=".csv">
 
+  <label>Test Recipient Email</label>
+  <input type="email" id="testEmail" placeholder="Enter your own email first">
+
   <label>Email Subject</label>
   <input type="text" id="subject" placeholder="Enter email subject">
 
   <label>Email Message</label>
-  <input type="text" id="message" placeholder="Enter email message">
+  <textarea id="message" placeholder="Enter email message"></textarea>
 
   <label>Product Photos (Maximum 3)</label>
   <input type="file" id="photos" accept="image/*" multiple>
 
   <button id="saveBtn">Save Draft Settings</button>
+
+  <label class="consent">
+    <input type="checkbox" id="permissionCheck">
+    <span>I confirm this test email is being sent to an address I control or have permission to contact.</span>
+  </label>
+
+  <button id="testSendBtn">Send One Test Email</button>
   <div id="status">Ready — no emails sent.</div>
 
+  <script src="gmail.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
