@@ -25,14 +25,15 @@ function base64Url(text) {
 
 async function sendEmail(recipient, subject, message) {
   const token = await new Promise((resolve, reject) => {
-    chrome.identity.getAuthToken({ interactive: true }, token => {
-      if (chrome.runtime.lastError || !token) {
+    chrome.identity.getAuthToken({ interactive: false }, result => {
+      if (chrome.runtime.lastError || !result) {
         reject(new Error(
           chrome.runtime.lastError?.message || "Gmail authorization failed."
         ));
         return;
       }
-      resolve(token);
+
+      resolve(typeof result === "string" ? result : result.token);
     });
   });
 
@@ -76,7 +77,10 @@ async function sendEmail(recipient, subject, message) {
 async function scheduleNext(timestamp) {
   await chrome.alarms.clear(ALARM_NAME);
 
-  const remaining = Math.max(0.5, (timestamp - Date.now()) / 60000);
+  const remaining = Math.max(
+    0.5,
+    (timestamp - Date.now()) / 60000
+  );
 
   await chrome.alarms.create(ALARM_NAME, {
     delayInMinutes: remaining
@@ -100,13 +104,8 @@ async function processNext() {
     const recipient = campaign.recipients[campaign.nextIndex];
     const email = recipient.email.toLowerCase();
 
-    if (campaign.sentEmails.includes(email)) {
-      campaign.nextIndex++;
-      await saveCampaign(campaign);
-      continue;
-    }
-
-    if (campaign.suppressedEmails.includes(email)) {
+    if (campaign.sentEmails.includes(email) ||
+        campaign.suppressedEmails.includes(email)) {
       campaign.nextIndex++;
       await saveCampaign(campaign);
       continue;
@@ -182,6 +181,13 @@ chrome.runtime.onStartup.addListener(async () => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message.action === "GET_CAMPAIGN") {
+      return {
+        success: true,
+        campaign: await getCampaign()
+      };
+    }
+
     if (message.action === "START_CAMPAIGN") {
       const existing = await getCampaign();
 
@@ -189,15 +195,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         throw new Error("An existing campaign needs to be resumed or reviewed.");
       }
 
-      const recipients = message.recipients || [];
+      const recipients = (message.recipients || [])
+        .map(item => {
+          if (typeof item === "string") {
+            return { name: "", email: item.trim().toLowerCase() };
+          }
+
+          return {
+            name: String(item.name || "").trim(),
+            email: String(item.email || "").trim().toLowerCase()
+          };
+        })
+        .filter(item => item.email);
+
       const subject = String(message.subject || "").trim();
       const body = String(message.message || "").trim();
 
-      if (!message.permission || !recipients.length || !subject || !body) {
-        throw new Error("Permission, recipients, subject and message are required.");
+      const suppressedEmails = (message.suppressedEmails || [])
+        .map(email => String(email).trim().toLowerCase())
+        .filter(Boolean);
+
+      if (
+        message.permission !== true ||
+        !recipients.length ||
+        !subject ||
+        !body
+      ) {
+        throw new Error(
+          "Permission, recipients, subject and message are required."
+        );
       }
 
-      const emails = recipients.map(r => String(r.email || "").toLowerCase());
+      const emails = recipients.map(item => item.email);
 
       if (new Set(emails).size !== emails.length) {
         throw new Error("Duplicate recipients detected. Campaign not started.");
@@ -210,7 +239,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         message: body,
         nextIndex: 0,
         sentEmails: [],
-        suppressedEmails: [],
+        suppressedEmails,
         inFlight: null,
         nextSendAt: Date.now()
       };
@@ -223,10 +252,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.action === "PAUSE_CAMPAIGN") {
       const campaign = await getCampaign();
+
       if (campaign) {
         campaign.status = "paused";
         await saveCampaign(campaign);
       }
+
       await chrome.alarms.clear(ALARM_NAME);
       return { success: true };
     }
@@ -235,6 +266,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const campaign = await getCampaign();
 
       if (!campaign) throw new Error("No saved campaign found.");
+
       if (campaign.inFlight) {
         throw new Error("Check Gmail Sent first. An earlier send needs review.");
       }
@@ -256,10 +288,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       await chrome.alarms.clear(ALARM_NAME);
       return { success: true };
-    }
-
-    if (message.action === "GET_CAMPAIGN") {
-      return { campaign: await getCampaign() };
     }
 
     throw new Error("Unknown campaign action.");
