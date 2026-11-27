@@ -1,13 +1,38 @@
 
 document.addEventListener("DOMContentLoaded", () => {
-  const csvInput = document.getElementById("csvFile");
-  const photoInput = document.getElementById("photos");
-  const saveBtn = document.getElementById("saveBtn");
-  const testBtn = document.getElementById("testSendBtn");
-  const status = document.getElementById("status");
+  const $ = id => document.getElementById(id);
+
+  const csvInput = $("csvFile");
+  const photoInput = $("photos");
+  const saveBtn = $("saveBtn");
+  const testBtn = $("testSendBtn");
+  const startBtn = $("startCampaignBtn");
+  const pauseBtn = $("pauseCampaignBtn");
+  const stopBtn = $("stopCampaignBtn");
+  const status = $("status");
+  const campaignStatus = $("campaignStatus");
+  const progress = $("campaignProgress");
+  const summary = $("csvSummary");
+
+  let recipients = [];
+  let campaignIndex = 0;
+  let campaignRunning = false;
+  let campaignPaused = false;
+  let campaignStopped = false;
+
+  const MAX_PER_SESSION = 10;
+  const DELAY_MS = 60000;
 
   function showStatus(message) {
     status.textContent = message;
+  }
+
+  function showCampaign(message) {
+    campaignStatus.textContent = message;
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   function parseCSV(text) {
@@ -40,7 +65,31 @@ document.addEventListener("DOMContentLoaded", () => {
 
     row.push(cell.trim());
     if (row.some(value => value !== "")) rows.push(row);
+
     return rows;
+  }
+
+  function validEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  function updateProgress() {
+    const total = recipients.length;
+    progress.max = total || 1;
+    progress.value = campaignIndex;
+  }
+
+  function updateCampaignButtons() {
+    startBtn.disabled =
+      campaignRunning ||
+      campaignIndex >= recipients.length ||
+      recipients.length === 0;
+
+    pauseBtn.disabled = !campaignRunning;
+    stopBtn.disabled = !campaignRunning;
+
+    startBtn.textContent =
+      campaignIndex > 0 ? "Continue Campaign" : "Start Campaign";
   }
 
   csvInput.addEventListener("change", async () => {
@@ -59,48 +108,65 @@ document.addEventListener("DOMContentLoaded", () => {
         h.replace(/^\uFEFF/, "").trim().toLowerCase()
       );
 
-      if (
-        !headers.includes("name") ||
-        !headers.includes("email") ||
-        !headers.includes("phone")
-      ) {
-        showStatus("CSV headings must be Name, Email, Phone.");
+      if (!headers.includes("name") || !headers.includes("email")) {
+        showStatus("CSV headings must include Name and Email.");
         return;
       }
 
+      const nameIndex = headers.indexOf("name");
       const emailIndex = headers.indexOf("email");
+
       const seen = new Set();
-      let valid = 0;
+      const validRecipients = [];
       let invalid = 0;
+      let duplicates = 0;
 
       rows.slice(1).forEach(row => {
         const email = (row[emailIndex] || "").trim().toLowerCase();
+        const name = (row[nameIndex] || "").trim();
 
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        if (!validEmail(email)) {
           invalid++;
-        } else if (!seen.has(email)) {
-          seen.add(email);
-          valid++;
+          return;
         }
+
+        if (seen.has(email)) {
+          duplicates++;
+          return;
+        }
+
+        seen.add(email);
+        validRecipients.push({ name, email });
       });
 
-      showStatus(`CSV checked: ${valid} valid unique emails, ${invalid} invalid rows. No emails sent.`);
+      recipients = validRecipients;
+      campaignIndex = 0;
+      campaignStopped = false;
+      campaignPaused = false;
+
+      summary.textContent =
+        `${recipients.length} valid unique recipients | ` +
+        `${invalid} invalid rows | ${duplicates} duplicates.`;
+
+      updateProgress();
+      updateCampaignButtons();
+
+      showCampaign("CSV ready. Review the recipient count before starting.");
+      showStatus("CSV checked. No campaign emails sent.");
     } catch (error) {
       showStatus("CSV error: " + error.message);
     }
   });
 
   saveBtn.addEventListener("click", async () => {
-    const photos = photoInput.files;
-
-    if (photos.length > 3) {
+    if (photoInput.files.length > 3) {
       showStatus("Maximum 3 photos allowed.");
       return;
     }
 
     const settings = {
-      subject: document.getElementById("subject").value,
-      message: document.getElementById("message").value,
+      subject: $("subject").value,
+      message: $("message").value,
       savedAt: new Date().toISOString()
     };
 
@@ -113,13 +179,13 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   testBtn.addEventListener("click", async () => {
-    const email = document.getElementById("testEmail").value.trim();
-    const subject = document.getElementById("subject").value.trim();
-    const message = document.getElementById("message").value.trim();
+    const email = $("testEmail").value.trim();
+    const subject = $("subject").value.trim();
+    const message = $("message").value.trim();
     const photos = Array.from(photoInput.files);
-    const permission = document.getElementById("permissionCheck").checked;
+    const permission = $("permissionCheck").checked;
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!validEmail(email)) {
       showStatus("Please enter a valid test recipient email.");
       return;
     }
@@ -152,7 +218,10 @@ document.addEventListener("DOMContentLoaded", () => {
         photos
       });
 
-      showStatus(`Test email accepted by Gmail for ${result.recipient}. Message ID: ${result.messageId}`);
+      showStatus(
+        `Test email accepted by Gmail for ${result.recipient}. ` +
+        `Message ID: ${result.messageId}`
+      );
     } catch (error) {
       showStatus("Sending error: " + (error.message || "Unknown error"));
     } finally {
@@ -160,11 +229,152 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  startBtn.addEventListener("click", async () => {
+    const subject = $("subject").value.trim();
+    const message = $("message").value.trim();
+    const photos = Array.from(photoInput.files);
+
+    if (!recipients.length) {
+      showStatus("Please upload a valid buyer CSV first.");
+      return;
+    }
+
+    if (!$("permissionCheck").checked) {
+      showStatus("Please confirm your authorization to contact these recipients.");
+      return;
+    }
+
+    if (!subject || !message) {
+      showStatus("Subject and message are required.");
+      return;
+    }
+
+    if (!/(unsubscribe|opt.?out|reply\s+stop)/i.test(message)) {
+      showStatus(
+        'Add a clear opt-out instruction, such as "Reply STOP to opt out", to your message.'
+      );
+      return;
+    }
+
+    if (photos.length > 3) {
+      showStatus("Maximum 3 photos allowed.");
+      return;
+    }
+
+    const remaining = recipients.length - campaignIndex;
+    const sessionCount = Math.min(MAX_PER_SESSION, remaining);
+
+    if (!confirm(
+      `Start a controlled campaign for ${sessionCount} recipients? ` +
+      `There will be a 60-second gap between emails.`
+    )) return;
+
+    campaignRunning = true;
+    campaignPaused = false;
+    campaignStopped = false;
+    updateCampaignButtons();
+
+    let sent = 0;
+    let failed = 0;
+
+    showCampaign("Campaign running...");
+
+    try {
+      while (
+        campaignIndex < recipients.length &&
+        sent + failed < MAX_PER_SESSION &&
+        !campaignStopped
+      ) {
+        while (campaignPaused && !campaignStopped) {
+          await sleep(500);
+        }
+
+        if (campaignStopped) break;
+
+        const recipient = recipients[campaignIndex];
+        const personalizedMessage = message.replace(
+          /\{name\}/gi,
+          recipient.name || "there"
+        );
+
+        showCampaign(
+          `Sending ${campaignIndex + 1} of ${recipients.length}: ${recipient.email}`
+        );
+
+        try {
+          await BIEmail.sendOneCampaignEmail({
+            email: recipient.email,
+            subject,
+            message: personalizedMessage,
+            photos
+          });
+          sent++;
+        } catch (error) {
+          failed++;
+          showStatus(
+            `Failed: ${recipient.email} — ${error.message || "Unknown error"}`
+          );
+        }
+
+        campaignIndex++;
+        updateProgress();
+
+        if (
+          campaignIndex < recipients.length &&
+          sent + failed < MAX_PER_SESSION &&
+          !campaignStopped
+        ) {
+          let waited = 0;
+
+          while (waited < DELAY_MS && !campaignStopped) {
+            while (campaignPaused && !campaignStopped) {
+              await sleep(500);
+            }
+
+            if (campaignStopped) break;
+
+            await sleep(1000);
+            waited += 1000;
+          }
+        }
+      }
+    } finally {
+      campaignRunning = false;
+      campaignPaused = false;
+      updateCampaignButtons();
+
+      if (campaignStopped) {
+        showCampaign(`Stopped. ${sent} sent, ${failed} failed in this session.`);
+      } else if (campaignIndex >= recipients.length) {
+        showCampaign(`Finished. ${sent} sent, ${failed} failed in this session.`);
+      } else {
+        showCampaign(
+          `Session ended. ${sent} sent, ${failed} failed. ` +
+          `${recipients.length - campaignIndex} recipients remain.`
+        );
+      }
+    }
+  });
+
+  pauseBtn.addEventListener("click", () => {
+    campaignPaused = !campaignPaused;
+    pauseBtn.textContent = campaignPaused ? "Resume" : "Pause";
+    showCampaign(campaignPaused ? "Campaign paused." : "Campaign resumed.");
+  });
+
+  stopBtn.addEventListener("click", () => {
+    campaignStopped = true;
+    campaignPaused = false;
+    showCampaign("Stopping after the current operation...");
+  });
+
   chrome.storage.local.get("biDraftSettings", result => {
     const saved = result.biDraftSettings;
     if (saved) {
-      document.getElementById("subject").value = saved.subject || "";
-      document.getElementById("message").value = saved.message || "";
+      $("subject").value = saved.subject || "";
+      $("message").value = saved.message || "";
     }
   });
+
+  updateCampaignButtons();
 });
