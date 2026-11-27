@@ -10,6 +10,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const pauseBtn = $("pauseCampaignBtn");
   const stopBtn = $("stopCampaignBtn");
 
+  const MAX_PHOTOS = 3;
+  const MAX_TOTAL_SIZE = 3 * 1024 * 1024;
+  const ALLOWED_TYPES = [
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp"
+  ];
+
   function status(message) {
     $("status").textContent = message;
   }
@@ -20,7 +29,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function parseCSV(text) {
     const rows = [];
-    let row = [], cell = "", quoted = false;
+    let row = [];
+    let cell = "";
+    let quoted = false;
 
     for (let i = 0; i < text.length; i++) {
       const c = text[i];
@@ -38,6 +49,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (row.some(v => v)) rows.push(row);
         row = [];
         cell = "";
+
         if (c === "\r" && text[i + 1] === "\n") i++;
       } else {
         cell += c;
@@ -46,11 +58,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
     row.push(cell.trim());
     if (row.some(v => v)) rows.push(row);
+
     return rows;
   }
 
   function validEmail(email) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  function getSuppressedEmails() {
+    return [...new Set(
+      $("suppressedEmails").value
+        .split(/\r?\n/)
+        .map(email => email.trim().toLowerCase())
+        .filter(validEmail)
+    )];
   }
 
   function updateUI(campaign) {
@@ -60,6 +82,7 @@ document.addEventListener("DOMContentLoaded", () => {
       campaignStatus("No saved campaign.");
       $("campaignProgress").value = 0;
       $("campaignProgress").max = 1;
+
       startBtn.textContent = "Start Campaign";
       startBtn.disabled = recipients.length === 0;
       pauseBtn.disabled = true;
@@ -83,15 +106,27 @@ document.addEventListener("DOMContentLoaded", () => {
       status("Campaign needs review: " + campaign.lastError);
     }
 
+    const canStartNew = ["completed", "stopped"].includes(
+      campaign.status
+    );
+
     startBtn.textContent =
       campaign.status === "paused"
         ? "Continue Campaign"
         : "Start Campaign";
 
-    startBtn.disabled = campaign.status !== "paused";
+    startBtn.disabled =
+      campaign.status === "paused"
+        ? false
+        : canStartNew
+          ? recipients.length === 0
+          : true;
 
     pauseBtn.disabled = campaign.status !== "running";
-    stopBtn.disabled = !["running", "paused"].includes(campaign.status);
+
+    stopBtn.disabled = !["running", "paused"].includes(
+      campaign.status
+    );
   }
 
   function sendAction(action, extra = {}) {
@@ -105,7 +140,9 @@ document.addEventListener("DOMContentLoaded", () => {
           }
 
           if (!response?.success) {
-            reject(new Error(response?.error || "Unknown extension error."));
+            reject(new Error(
+              response?.error || "Extension error."
+            ));
             return;
           }
 
@@ -124,6 +161,52 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  async function readPhotos() {
+    const files = Array.from($("photos").files || []);
+
+    if (files.length > MAX_PHOTOS) {
+      throw new Error("Maximum 3 product photos allowed.");
+    }
+
+    let totalSize = 0;
+    const attachments = [];
+
+    for (const file of files) {
+      if (!ALLOWED_TYPES.includes(file.type)) {
+        throw new Error(
+          `${file.name}: JPG, PNG, GIF or WEBP images only.`
+        );
+      }
+
+      totalSize += file.size;
+
+      if (totalSize > MAX_TOTAL_SIZE) {
+        throw new Error(
+          "Total photo size must not exceed 3 MB."
+        );
+      }
+
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onload = () => resolve(reader.result);
+
+        reader.onerror = () => reject(
+          new Error("Could not read photo: " + file.name)
+        );
+
+        reader.readAsDataURL(file);
+      });
+
+      attachments.push({
+        name: file.name,
+        dataUrl
+      });
+    }
+
+    return attachments;
+  }
+
   csvInput.addEventListener("change", async () => {
     const file = csvInput.files[0];
     if (!file) return;
@@ -140,11 +223,10 @@ document.addEventListener("DOMContentLoaded", () => {
         h.replace(/^\uFEFF/, "").trim().toLowerCase()
       );
 
-      const nameIndex = headers.indexOf("name");
       const emailIndex = headers.indexOf("email");
 
-      if (emailIndex === -1 || nameIndex === -1) {
-        status("CSV must contain Name and Email headings.");
+      if (emailIndex === -1) {
+        status("CSV must contain an Email heading.");
         return;
       }
 
@@ -155,8 +237,9 @@ document.addEventListener("DOMContentLoaded", () => {
       recipients = [];
 
       rows.slice(1).forEach(row => {
-        const email = (row[emailIndex] || "").trim().toLowerCase();
-        const name = (row[nameIndex] || "").trim();
+        const email = (row[emailIndex] || "")
+          .trim()
+          .toLowerCase();
 
         if (!validEmail(email)) {
           invalid++;
@@ -169,7 +252,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         seen.add(email);
-        recipients.push({ name, email });
+        recipients.push({ email });
       });
 
       $("csvSummary").textContent =
@@ -184,19 +267,58 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  $("saveBtn").addEventListener("click", async () => {
-    const settings = {
-      subject: $("subject").value,
-      message: $("message").value
-    };
+  $("photos").addEventListener("change", () => {
+    const files = Array.from($("photos").files || []);
+    const total = files.reduce(
+      (sum, file) => sum + file.size,
+      0
+    );
 
+    if (files.length > MAX_PHOTOS) {
+      status("Maximum 3 product photos allowed.");
+    } else if (total > MAX_TOTAL_SIZE) {
+      status("Total photo size must not exceed 3 MB.");
+    } else {
+      status(`${files.length} product photo(s) selected.`);
+    }
+  });
+
+  $("saveBtn").addEventListener("click", async () => {
     try {
       await chrome.storage.local.set({
-        biDraftSettings: settings
+        biDraftSettings: {
+          subject: $("subject").value,
+          message: $("message").value
+        }
       });
+
       status("Draft settings saved.");
     } catch (error) {
       status("Save error: " + error.message);
+    }
+  });
+
+  $("suppressedEmails").addEventListener("change", async () => {
+    if (
+      !currentCampaign ||
+      !["running", "paused"].includes(currentCampaign.status)
+    ) {
+      return;
+    }
+
+    try {
+      await sendAction("UPDATE_SUPPRESSION", {
+        emails: getSuppressedEmails()
+      });
+
+      status(
+        "Opt-out list updated. Future unsent emails will be skipped."
+      );
+
+      await refreshCampaign();
+
+    } catch (error) {
+      status("Opt-out update failed: " + error.message);
     }
   });
 
@@ -209,8 +331,13 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      if (currentCampaign) {
-        status("An existing campaign is present. It cannot be replaced automatically.");
+      if (
+        currentCampaign &&
+        !["completed", "stopped"].includes(currentCampaign.status)
+      ) {
+        status(
+          "Existing campaign must be completed, stopped or resumed first."
+        );
         return;
       }
 
@@ -237,26 +364,29 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      const suppressedEmails = $("suppressedEmails").value
-        .split(/\r?\n/)
-        .map(email => email.trim().toLowerCase())
-        .filter(validEmail);
-
+      const suppressedEmails = getSuppressedEmails();
       const suppressed = new Set(suppressedEmails);
 
-      const eligibleRecipients = recipients
-        .filter(r => !suppressed.has(r.email))
-        .map(r => r.email);
+      const eligibleRecipients = recipients.filter(
+        recipient => !suppressed.has(recipient.email)
+      );
 
       if (!eligibleRecipients.length) {
-        status("No eligible recipients remain after opt-out filtering.");
+        status(
+          "No eligible recipients remain after opt-out filtering."
+        );
         return;
       }
 
-      if (!confirm(
-        `Start campaign for ${eligibleRecipients.length} recipients? ` +
+      const attachments = await readPhotos();
+
+      const confirmed = confirm(
+        `Start campaign for ${eligibleRecipients.length} recipients?\n` +
+        `${attachments.length} photo(s) attached.\n` +
         "Emails will be spaced 240 seconds apart."
-      )) return;
+      );
+
+      if (!confirmed) return;
 
       startBtn.disabled = true;
       status("Authorizing Gmail...");
@@ -282,10 +412,14 @@ document.addEventListener("DOMContentLoaded", () => {
         recipients: eligibleRecipients,
         suppressedEmails,
         subject,
-        message
+        message,
+        attachments
       });
 
-      status("Campaign started. First email is being processed.");
+      status(
+        "Campaign started. First email is being processed."
+      );
+
       await refreshCampaign();
 
     } catch (error) {
@@ -307,7 +441,9 @@ document.addEventListener("DOMContentLoaded", () => {
   stopBtn.addEventListener("click", async () => {
     if (!confirm(
       "Stop this campaign? Its sent history will be retained."
-    )) return;
+    )) {
+      return;
+    }
 
     try {
       await sendAction("STOP_CAMPAIGN");
