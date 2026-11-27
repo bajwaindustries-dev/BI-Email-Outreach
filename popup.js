@@ -67,12 +67,12 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const total = campaign.recipients.length;
-    const sent = campaign.sentEmails.length;
-    const next = campaign.nextIndex;
+    const total = campaign.recipients?.length || 0;
+    const sent = campaign.sentEmails?.length || 0;
+    const next = campaign.nextIndex || 0;
 
     $("campaignProgress").max = total || 1;
-    $("campaignProgress").value = next;
+    $("campaignProgress").value = Math.min(next, total);
 
     campaignStatus(
       `Status: ${campaign.status} | Sent: ${sent} | ` +
@@ -84,11 +84,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     startBtn.textContent =
-      campaign.status === "paused" ? "Continue Campaign" : "Start Campaign";
+      campaign.status === "paused"
+        ? "Continue Campaign"
+        : "Start Campaign";
 
-    startBtn.disabled = [
-      "running", "completed", "stopped", "review"
-    ].includes(campaign.status);
+    startBtn.disabled = !["paused"].includes(campaign.status);
 
     pauseBtn.disabled = campaign.status !== "running";
     stopBtn.disabled = !["running", "paused"].includes(campaign.status);
@@ -96,19 +96,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function sendAction(action, extra = {}) {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ action, ...extra }, response => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
+      chrome.runtime.sendMessage(
+        { action, ...extra },
+        response => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
 
-        if (!response?.success && response?.error) {
-          reject(new Error(response.error));
-          return;
-        }
+          if (!response?.success) {
+            reject(new Error(response?.error || "Unknown extension error."));
+            return;
+          }
 
-        resolve(response);
-      });
+          resolve(response);
+        }
+      );
     });
   }
 
@@ -173,8 +176,9 @@ document.addEventListener("DOMContentLoaded", () => {
         `${recipients.length} valid unique recipients | ` +
         `${invalid} invalid rows | ${duplicates} duplicates.`;
 
-      status("CSV loaded. Existing campaign progress will be checked.");
+      status("CSV loaded. Checking saved campaign...");
       await refreshCampaign();
+
     } catch (error) {
       status("CSV error: " + error.message);
     }
@@ -187,7 +191,9 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     try {
-      await chrome.storage.local.set({ biDraftSettings: settings });
+      await chrome.storage.local.set({
+        biDraftSettings: settings
+      });
       status("Draft settings saved.");
     } catch (error) {
       status("Save error: " + error.message);
@@ -204,7 +210,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (currentCampaign) {
-        status("An existing campaign is present. Review its status before starting another.");
+        status("An existing campaign is present. It cannot be replaced automatically.");
         return;
       }
 
@@ -227,7 +233,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (!/(unsubscribe|opt.?out|reply\s+stop)/i.test(message)) {
-        status('Add a clear opt-out instruction to your email.');
+        status("Add a clear opt-out instruction to your email.");
         return;
       }
 
@@ -237,9 +243,10 @@ document.addEventListener("DOMContentLoaded", () => {
         .filter(validEmail);
 
       const suppressed = new Set(suppressedEmails);
-      const eligibleRecipients = recipients.filter(
-        r => !suppressed.has(r.email.toLowerCase())
-      );
+
+      const eligibleRecipients = recipients
+        .filter(r => !suppressed.has(r.email))
+        .map(r => r.email);
 
       if (!eligibleRecipients.length) {
         status("No eligible recipients remain after opt-out filtering.");
@@ -248,34 +255,38 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (!confirm(
         `Start campaign for ${eligibleRecipients.length} recipients? ` +
-        `Emails will be spaced 240 seconds apart.`
+        "Emails will be spaced 240 seconds apart."
       )) return;
 
       startBtn.disabled = true;
       status("Authorizing Gmail...");
 
-      // User interaction allows the Google authorization prompt.
       await new Promise((resolve, reject) => {
-        chrome.identity.getAuthToken({ interactive: true }, token => {
-          if (chrome.runtime.lastError || !token) {
-            reject(new Error(
-              chrome.runtime.lastError?.message || "Gmail authorization failed."
-            ));
-          } else {
-            resolve(token);
+        chrome.identity.getAuthToken(
+          { interactive: true },
+          token => {
+            if (chrome.runtime.lastError || !token) {
+              reject(new Error(
+                chrome.runtime.lastError?.message ||
+                "Gmail authorization failed."
+              ));
+            } else {
+              resolve(token);
+            }
           }
-        });
+        );
       });
 
       await sendAction("START_CAMPAIGN", {
         recipients: eligibleRecipients,
+        suppressedEmails,
         subject,
-        message,
-        permission: true
+        message
       });
 
-      status("Campaign started. Progress is saved in extension storage.");
+      status("Campaign started. First email is being processed.");
       await refreshCampaign();
+
     } catch (error) {
       status("Campaign error: " + error.message);
       await refreshCampaign();
@@ -293,13 +304,13 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   stopBtn.addEventListener("click", async () => {
-    if (!confirm("Stop this campaign? It will not be restartable from this screen.")) {
-      return;
-    }
+    if (!confirm(
+      "Stop this campaign? Its sent history will be retained."
+    )) return;
 
     try {
       await sendAction("STOP_CAMPAIGN");
-      status("Campaign stopped. Previously sent recipients remain recorded.");
+      status("Campaign stopped. Sent history is retained.");
       await refreshCampaign();
     } catch (error) {
       status(error.message);
@@ -308,6 +319,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   chrome.storage.local.get("biDraftSettings", result => {
     const saved = result.biDraftSettings;
+
     if (saved) {
       $("subject").value = saved.subject || "";
       $("message").value = saved.message || "";
