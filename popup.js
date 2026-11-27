@@ -93,13 +93,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const total = campaign.recipients?.length || 0;
     const sent = campaign.sentEmails?.length || 0;
     const next = campaign.nextIndex || 0;
+    const skipped = campaign.skippedEmails?.length || 0;
+    const attachmentCount = campaign.attachments?.length || 0;
 
     $("campaignProgress").max = total || 1;
     $("campaignProgress").value = Math.min(next, total);
 
     campaignStatus(
       `Status: ${campaign.status} | Sent: ${sent} | ` +
-      `Remaining: ${Math.max(0, total - next)}`
+      `Remaining: ${Math.max(0, total - next)} | ` +
+      `Photos: ${attachmentCount} | Skipped: ${skipped}`
     );
 
     if (campaign.lastError) {
@@ -283,8 +286,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // SAVE DRAFT AND UPDATE PAUSED CAMPAIGN PHOTOS
+
   $("saveBtn").addEventListener("click", async () => {
     try {
+      const attachments = await readPhotos();
+
       await chrome.storage.local.set({
         biDraftSettings: {
           subject: $("subject").value,
@@ -292,7 +299,31 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       });
 
-      status("Draft settings saved.");
+      if (currentCampaign?.status === "paused") {
+        if (!attachments.length) {
+          status("Select at least one photo before saving campaign attachments.");
+          return;
+        }
+
+        status("Saving photos to paused campaign...");
+
+        const result = await sendAction("UPDATE_ATTACHMENTS", {
+          attachments
+        });
+
+        await refreshCampaign();
+
+        status(
+          `${result.attachmentCount} product photo(s) saved to paused campaign.`
+        );
+
+        return;
+      }
+
+      status(
+        "Draft settings saved. Photos will be attached when starting a new campaign."
+      );
+
     } catch (error) {
       status("Save error: " + error.message);
     }
@@ -325,6 +356,11 @@ document.addEventListener("DOMContentLoaded", () => {
   startBtn.addEventListener("click", async () => {
     try {
       if (currentCampaign?.status === "paused") {
+        if (currentCampaign.inFlight) {
+          status("An earlier email still needs review. Do not resume.");
+          return;
+        }
+
         await sendAction("RESUME_CAMPAIGN");
         status("Saved campaign resumed.");
         await refreshCampaign();
