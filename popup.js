@@ -2,70 +2,50 @@
 document.addEventListener("DOMContentLoaded", () => {
   const $ = id => document.getElementById(id);
 
+  let recipients = [];
+  let currentCampaign = null;
+
   const csvInput = $("csvFile");
-  const photoInput = $("photos");
-  const saveBtn = $("saveBtn");
-  const testBtn = $("testSendBtn");
   const startBtn = $("startCampaignBtn");
   const pauseBtn = $("pauseCampaignBtn");
   const stopBtn = $("stopCampaignBtn");
-  const status = $("status");
-  const campaignStatus = $("campaignStatus");
-  const progress = $("campaignProgress");
-  const summary = $("csvSummary");
 
-  let recipients = [];
-  let campaignIndex = 0;
-  let campaignRunning = false;
-  let campaignPaused = false;
-  let campaignStopped = false;
-
-  const MAX_PER_SESSION = 10;
-  const DELAY_MS = 60000;
-
-  function showStatus(message) {
-    status.textContent = message;
+  function status(message) {
+    $("status").textContent = message;
   }
 
-  function showCampaign(message) {
-    campaignStatus.textContent = message;
-  }
-
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  function campaignStatus(message) {
+    $("campaignStatus").textContent = message;
   }
 
   function parseCSV(text) {
     const rows = [];
-    let row = [];
-    let cell = "";
-    let quoted = false;
+    let row = [], cell = "", quoted = false;
 
     for (let i = 0; i < text.length; i++) {
-      const char = text[i];
+      const c = text[i];
 
-      if (char === '"' && quoted && text[i + 1] === '"') {
+      if (c === '"' && quoted && text[i + 1] === '"') {
         cell += '"';
         i++;
-      } else if (char === '"') {
+      } else if (c === '"') {
         quoted = !quoted;
-      } else if (char === "," && !quoted) {
+      } else if (c === "," && !quoted) {
         row.push(cell.trim());
         cell = "";
-      } else if ((char === "\n" || char === "\r") && !quoted) {
+      } else if ((c === "\n" || c === "\r") && !quoted) {
         row.push(cell.trim());
-        if (row.some(value => value !== "")) rows.push(row);
+        if (row.some(v => v)) rows.push(row);
         row = [];
         cell = "";
-        if (char === "\r" && text[i + 1] === "\n") i++;
+        if (c === "\r" && text[i + 1] === "\n") i++;
       } else {
-        cell += char;
+        cell += c;
       }
     }
 
     row.push(cell.trim());
-    if (row.some(value => value !== "")) rows.push(row);
-
+    if (row.some(v => v)) rows.push(row);
     return rows;
   }
 
@@ -73,23 +53,72 @@ document.addEventListener("DOMContentLoaded", () => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   }
 
-  function updateProgress() {
-    const total = recipients.length;
-    progress.max = total || 1;
-    progress.value = campaignIndex;
-  }
+  function updateUI(campaign) {
+    currentCampaign = campaign;
 
-  function updateCampaignButtons() {
-    startBtn.disabled =
-      campaignRunning ||
-      campaignIndex >= recipients.length ||
-      recipients.length === 0;
+    if (!campaign) {
+      campaignStatus("No saved campaign.");
+      $("campaignProgress").value = 0;
+      $("campaignProgress").max = 1;
+      startBtn.textContent = "Start Campaign";
+      startBtn.disabled = recipients.length === 0;
+      pauseBtn.disabled = true;
+      stopBtn.disabled = true;
+      return;
+    }
 
-    pauseBtn.disabled = !campaignRunning;
-    stopBtn.disabled = !campaignRunning;
+    const total = campaign.recipients.length;
+    const sent = campaign.sentEmails.length;
+    const next = campaign.nextIndex;
+
+    $("campaignProgress").max = total || 1;
+    $("campaignProgress").value = next;
+
+    campaignStatus(
+      `Status: ${campaign.status} | Sent: ${sent} | ` +
+      `Remaining: ${Math.max(0, total - next)}`
+    );
+
+    if (campaign.lastError) {
+      status("Campaign needs review: " + campaign.lastError);
+    }
 
     startBtn.textContent =
-      campaignIndex > 0 ? "Continue Campaign" : "Start Campaign";
+      campaign.status === "paused" ? "Continue Campaign" : "Start Campaign";
+
+    startBtn.disabled = [
+      "running", "completed", "stopped", "review"
+    ].includes(campaign.status);
+
+    pauseBtn.disabled = campaign.status !== "running";
+    stopBtn.disabled = !["running", "paused"].includes(campaign.status);
+  }
+
+  function sendAction(action, extra = {}) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action, ...extra }, response => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        if (!response?.success && response?.error) {
+          reject(new Error(response.error));
+          return;
+        }
+
+        resolve(response);
+      });
+    });
+  }
+
+  async function refreshCampaign() {
+    try {
+      const result = await sendAction("GET_CAMPAIGN");
+      updateUI(result.campaign);
+    } catch (error) {
+      status("Campaign status error: " + error.message);
+    }
   }
 
   csvInput.addEventListener("change", async () => {
@@ -100,7 +129,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const rows = parseCSV(await file.text());
 
       if (rows.length < 2) {
-        showStatus("CSV file is empty or invalid.");
+        status("CSV file is empty or invalid.");
         return;
       }
 
@@ -108,18 +137,19 @@ document.addEventListener("DOMContentLoaded", () => {
         h.replace(/^\uFEFF/, "").trim().toLowerCase()
       );
 
-      if (!headers.includes("name") || !headers.includes("email")) {
-        showStatus("CSV headings must include Name and Email.");
-        return;
-      }
-
       const nameIndex = headers.indexOf("name");
       const emailIndex = headers.indexOf("email");
 
+      if (emailIndex === -1 || nameIndex === -1) {
+        status("CSV must contain Name and Email headings.");
+        return;
+      }
+
       const seen = new Set();
-      const validRecipients = [];
       let invalid = 0;
       let duplicates = 0;
+
+      recipients = [];
 
       rows.slice(1).forEach(row => {
         const email = (row[emailIndex] || "").trim().toLowerCase();
@@ -136,236 +166,144 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         seen.add(email);
-        validRecipients.push({ name, email });
+        recipients.push({ name, email });
       });
 
-      recipients = validRecipients;
-      campaignIndex = 0;
-      campaignStopped = false;
-      campaignPaused = false;
-
-      summary.textContent =
+      $("csvSummary").textContent =
         `${recipients.length} valid unique recipients | ` +
         `${invalid} invalid rows | ${duplicates} duplicates.`;
 
-      updateProgress();
-      updateCampaignButtons();
-
-      showCampaign("CSV ready. Review the recipient count before starting.");
-      showStatus("CSV checked. No campaign emails sent.");
+      status("CSV loaded. Existing campaign progress will be checked.");
+      await refreshCampaign();
     } catch (error) {
-      showStatus("CSV error: " + error.message);
+      status("CSV error: " + error.message);
     }
   });
 
-  saveBtn.addEventListener("click", async () => {
-    if (photoInput.files.length > 3) {
-      showStatus("Maximum 3 photos allowed.");
-      return;
-    }
-
+  $("saveBtn").addEventListener("click", async () => {
     const settings = {
       subject: $("subject").value,
-      message: $("message").value,
-      savedAt: new Date().toISOString()
+      message: $("message").value
     };
 
     try {
       await chrome.storage.local.set({ biDraftSettings: settings });
-      showStatus("Draft settings saved successfully.");
+      status("Draft settings saved.");
     } catch (error) {
-      showStatus("Save error: " + error.message);
-    }
-  });
-
-  testBtn.addEventListener("click", async () => {
-    const email = $("testEmail").value.trim();
-    const subject = $("subject").value.trim();
-    const message = $("message").value.trim();
-    const photos = Array.from(photoInput.files);
-    const permission = $("permissionCheck").checked;
-
-    if (!validEmail(email)) {
-      showStatus("Please enter a valid test recipient email.");
-      return;
-    }
-
-    if (!subject || !message) {
-      showStatus("Please enter both subject and message.");
-      return;
-    }
-
-    if (!permission) {
-      showStatus("Please confirm you have permission to contact this recipient.");
-      return;
-    }
-
-    if (photos.length > 3) {
-      showStatus("Maximum 3 photos allowed.");
-      return;
-    }
-
-    if (!confirm(`Send ONE test email to ${email}?`)) return;
-
-    testBtn.disabled = true;
-    showStatus("Connecting to Gmail...");
-
-    try {
-      const result = await BIEmail.sendOneTest({
-        email,
-        subject,
-        message,
-        photos
-      });
-
-      showStatus(
-        `Test email accepted by Gmail for ${result.recipient}. ` +
-        `Message ID: ${result.messageId}`
-      );
-    } catch (error) {
-      showStatus("Sending error: " + (error.message || "Unknown error"));
-    } finally {
-      testBtn.disabled = false;
+      status("Save error: " + error.message);
     }
   });
 
   startBtn.addEventListener("click", async () => {
-    const subject = $("subject").value.trim();
-    const message = $("message").value.trim();
-    const photos = Array.from(photoInput.files);
+    try {
+      if (currentCampaign?.status === "paused") {
+        await sendAction("RESUME_CAMPAIGN");
+        status("Saved campaign resumed.");
+        await refreshCampaign();
+        return;
+      }
 
-    if (!recipients.length) {
-      showStatus("Please upload a valid buyer CSV first.");
-      return;
-    }
+      if (currentCampaign) {
+        status("An existing campaign is present. Review its status before starting another.");
+        return;
+      }
 
-    if (!$("permissionCheck").checked) {
-      showStatus("Please confirm your authorization to contact these recipients.");
-      return;
-    }
+      if (!recipients.length) {
+        status("Upload your buyer CSV first.");
+        return;
+      }
 
-    if (!subject || !message) {
-      showStatus("Subject and message are required.");
-      return;
-    }
+      if (!$("permissionCheck").checked) {
+        status("Confirm authorization before starting.");
+        return;
+      }
 
-    if (!/(unsubscribe|opt.?out|reply\s+stop)/i.test(message)) {
-      showStatus(
-        'Add a clear opt-out instruction, such as "Reply STOP to opt out", to your message.'
+      const subject = $("subject").value.trim();
+      const message = $("message").value.trim();
+
+      if (!subject || !message) {
+        status("Subject and message are required.");
+        return;
+      }
+
+      if (!/(unsubscribe|opt.?out|reply\s+stop)/i.test(message)) {
+        status('Add a clear opt-out instruction to your email.');
+        return;
+      }
+
+      const suppressedEmails = $("suppressedEmails").value
+        .split(/\r?\n/)
+        .map(email => email.trim().toLowerCase())
+        .filter(validEmail);
+
+      const suppressed = new Set(suppressedEmails);
+      const eligibleRecipients = recipients.filter(
+        r => !suppressed.has(r.email.toLowerCase())
       );
+
+      if (!eligibleRecipients.length) {
+        status("No eligible recipients remain after opt-out filtering.");
+        return;
+      }
+
+      if (!confirm(
+        `Start campaign for ${eligibleRecipients.length} recipients? ` +
+        `Emails will be spaced 240 seconds apart.`
+      )) return;
+
+      startBtn.disabled = true;
+      status("Authorizing Gmail...");
+
+      // User interaction allows the Google authorization prompt.
+      await new Promise((resolve, reject) => {
+        chrome.identity.getAuthToken({ interactive: true }, token => {
+          if (chrome.runtime.lastError || !token) {
+            reject(new Error(
+              chrome.runtime.lastError?.message || "Gmail authorization failed."
+            ));
+          } else {
+            resolve(token);
+          }
+        });
+      });
+
+      await sendAction("START_CAMPAIGN", {
+        recipients: eligibleRecipients,
+        subject,
+        message,
+        permission: true
+      });
+
+      status("Campaign started. Progress is saved in extension storage.");
+      await refreshCampaign();
+    } catch (error) {
+      status("Campaign error: " + error.message);
+      await refreshCampaign();
+    }
+  });
+
+  pauseBtn.addEventListener("click", async () => {
+    try {
+      await sendAction("PAUSE_CAMPAIGN");
+      status("Campaign paused. Saved progress is retained.");
+      await refreshCampaign();
+    } catch (error) {
+      status(error.message);
+    }
+  });
+
+  stopBtn.addEventListener("click", async () => {
+    if (!confirm("Stop this campaign? It will not be restartable from this screen.")) {
       return;
     }
-
-    if (photos.length > 3) {
-      showStatus("Maximum 3 photos allowed.");
-      return;
-    }
-
-    const remaining = recipients.length - campaignIndex;
-    const sessionCount = Math.min(MAX_PER_SESSION, remaining);
-
-    if (!confirm(
-      `Start a controlled campaign for ${sessionCount} recipients? ` +
-      `There will be a 60-second gap between emails.`
-    )) return;
-
-    campaignRunning = true;
-    campaignPaused = false;
-    campaignStopped = false;
-    updateCampaignButtons();
-
-    let sent = 0;
-    let failed = 0;
-
-    showCampaign("Campaign running...");
 
     try {
-      while (
-        campaignIndex < recipients.length &&
-        sent + failed < MAX_PER_SESSION &&
-        !campaignStopped
-      ) {
-        while (campaignPaused && !campaignStopped) {
-          await sleep(500);
-        }
-
-        if (campaignStopped) break;
-
-        const recipient = recipients[campaignIndex];
-        const personalizedMessage = message.replace(
-          /\{name\}/gi,
-          recipient.name || "there"
-        );
-
-        showCampaign(
-          `Sending ${campaignIndex + 1} of ${recipients.length}: ${recipient.email}`
-        );
-
-        try {
-          await BIEmail.sendOneCampaignEmail({
-            email: recipient.email,
-            subject,
-            message: personalizedMessage,
-            photos
-          });
-          sent++;
-        } catch (error) {
-          failed++;
-          showStatus(
-            `Failed: ${recipient.email} — ${error.message || "Unknown error"}`
-          );
-        }
-
-        campaignIndex++;
-        updateProgress();
-
-        if (
-          campaignIndex < recipients.length &&
-          sent + failed < MAX_PER_SESSION &&
-          !campaignStopped
-        ) {
-          let waited = 0;
-
-          while (waited < DELAY_MS && !campaignStopped) {
-            while (campaignPaused && !campaignStopped) {
-              await sleep(500);
-            }
-
-            if (campaignStopped) break;
-
-            await sleep(1000);
-            waited += 1000;
-          }
-        }
-      }
-    } finally {
-      campaignRunning = false;
-      campaignPaused = false;
-      updateCampaignButtons();
-
-      if (campaignStopped) {
-        showCampaign(`Stopped. ${sent} sent, ${failed} failed in this session.`);
-      } else if (campaignIndex >= recipients.length) {
-        showCampaign(`Finished. ${sent} sent, ${failed} failed in this session.`);
-      } else {
-        showCampaign(
-          `Session ended. ${sent} sent, ${failed} failed. ` +
-          `${recipients.length - campaignIndex} recipients remain.`
-        );
-      }
+      await sendAction("STOP_CAMPAIGN");
+      status("Campaign stopped. Previously sent recipients remain recorded.");
+      await refreshCampaign();
+    } catch (error) {
+      status(error.message);
     }
-  });
-
-  pauseBtn.addEventListener("click", () => {
-    campaignPaused = !campaignPaused;
-    pauseBtn.textContent = campaignPaused ? "Resume" : "Pause";
-    showCampaign(campaignPaused ? "Campaign paused." : "Campaign resumed.");
-  });
-
-  stopBtn.addEventListener("click", () => {
-    campaignStopped = true;
-    campaignPaused = false;
-    showCampaign("Stopping after the current operation...");
   });
 
   chrome.storage.local.get("biDraftSettings", result => {
@@ -376,5 +314,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  updateCampaignButtons();
+  refreshCampaign();
+  setInterval(refreshCampaign, 5000);
 });
