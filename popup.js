@@ -88,7 +88,7 @@ document.addEventListener("DOMContentLoaded", () => {
         ? "Continue Campaign"
         : "Start Campaign";
 
-    startBtn.disabled = !["paused"].includes(campaign.status);
+    startBtn.disabled = campaign.status !== "paused";
 
     pauseBtn.disabled = campaign.status !== "running";
     stopBtn.disabled = !["running", "paused"].includes(campaign.status);
@@ -278,6 +278,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       await sendAction("START_CAMPAIGN", {
+        permission: true,
         recipients: eligibleRecipients,
         suppressedEmails,
         subject,
