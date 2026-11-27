@@ -12,6 +12,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const MAX_PHOTOS = 3;
   const MAX_TOTAL_SIZE = 3 * 1024 * 1024;
+
   const ALLOWED_TYPES = [
     "image/jpeg",
     "image/png",
@@ -46,7 +47,9 @@ document.addEventListener("DOMContentLoaded", () => {
         cell = "";
       } else if ((c === "\n" || c === "\r") && !quoted) {
         row.push(cell.trim());
+
         if (row.some(v => v)) rows.push(row);
+
         row = [];
         cell = "";
 
@@ -57,6 +60,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     row.push(cell.trim());
+
     if (row.some(v => v)) rows.push(row);
 
     return rows;
@@ -87,6 +91,7 @@ document.addEventListener("DOMContentLoaded", () => {
       startBtn.disabled = recipients.length === 0;
       pauseBtn.disabled = true;
       stopBtn.disabled = true;
+
       return;
     }
 
@@ -109,21 +114,20 @@ document.addEventListener("DOMContentLoaded", () => {
       status("Campaign needs review: " + campaign.lastError);
     }
 
-    const canStartNew = ["completed", "stopped"].includes(
-      campaign.status
-    );
+    if (campaign.status === "paused") {
+      startBtn.textContent = "Paused — Review Required";
+      startBtn.disabled = true;
+    } else {
+      const canStartNew = ["completed", "stopped"].includes(
+        campaign.status
+      );
 
-    startBtn.textContent =
-      campaign.status === "paused"
-        ? "Continue Campaign"
-        : "Start Campaign";
+      startBtn.textContent = "Start Campaign";
 
-    startBtn.disabled =
-      campaign.status === "paused"
-        ? false
-        : canStartNew
-          ? recipients.length === 0
-          : true;
+      startBtn.disabled = canStartNew
+        ? recipients.length === 0
+        : true;
+    }
 
     pauseBtn.disabled = campaign.status !== "running";
 
@@ -210,8 +214,11 @@ document.addEventListener("DOMContentLoaded", () => {
     return attachments;
   }
 
+  // CSV UPLOAD
+
   csvInput.addEventListener("change", async () => {
     const file = csvInput.files[0];
+
     if (!file) return;
 
     try {
@@ -263,6 +270,7 @@ document.addEventListener("DOMContentLoaded", () => {
         `${invalid} invalid rows | ${duplicates} duplicates.`;
 
       status("CSV loaded. Checking saved campaign...");
+
       await refreshCampaign();
 
     } catch (error) {
@@ -270,8 +278,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // PHOTO SELECTION
+
   $("photos").addEventListener("change", () => {
     const files = Array.from($("photos").files || []);
+
     const total = files.reduce(
       (sum, file) => sum + file.size,
       0
@@ -286,7 +297,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // SAVE DRAFT AND UPDATE PAUSED CAMPAIGN PHOTOS
+  // SAVE SETTINGS AND CAMPAIGN PHOTOS
 
   $("saveBtn").addEventListener("click", async () => {
     try {
@@ -300,9 +311,16 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       if (currentCampaign?.status === "paused") {
+        if (currentCampaign.inFlight) {
+          throw new Error(
+            "An earlier email needs review. Photos cannot be updated."
+          );
+        }
+
         if (!attachments.length) {
-          status("Select at least one photo before saving campaign attachments.");
-          return;
+          throw new Error(
+            "Select at least one photo before saving."
+          );
         }
 
         status("Saving photos to paused campaign...");
@@ -329,6 +347,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // UPDATE UNSUBSCRIBE LIST
+
   $("suppressedEmails").addEventListener("change", async () => {
     if (
       !currentCampaign ||
@@ -353,17 +373,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // START NEW CAMPAIGN
+  // Paused campaign resume is intentionally disabled for now.
+
   startBtn.addEventListener("click", async () => {
     try {
       if (currentCampaign?.status === "paused") {
-        if (currentCampaign.inFlight) {
-          status("An earlier email still needs review. Do not resume.");
-          return;
-        }
-
-        await sendAction("RESUME_CAMPAIGN");
-        status("Saved campaign resumed.");
-        await refreshCampaign();
+        status(
+          "Campaign is paused for review. Do not resume yet."
+        );
         return;
       }
 
@@ -372,7 +390,7 @@ document.addEventListener("DOMContentLoaded", () => {
         !["completed", "stopped"].includes(currentCampaign.status)
       ) {
         status(
-          "Existing campaign must be completed, stopped or resumed first."
+          "Existing campaign must be reviewed before starting another."
         );
         return;
       }
@@ -464,15 +482,22 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // PAUSE
+
   pauseBtn.addEventListener("click", async () => {
     try {
       await sendAction("PAUSE_CAMPAIGN");
+
       status("Campaign paused. Saved progress is retained.");
+
       await refreshCampaign();
+
     } catch (error) {
       status(error.message);
     }
   });
+
+  // STOP
 
   stopBtn.addEventListener("click", async () => {
     if (!confirm(
@@ -483,12 +508,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       await sendAction("STOP_CAMPAIGN");
+
       status("Campaign stopped. Sent history is retained.");
+
       await refreshCampaign();
+
     } catch (error) {
       status(error.message);
     }
   });
+
+  // LOAD SAVED DRAFT
 
   chrome.storage.local.get("biDraftSettings", result => {
     const saved = result.biDraftSettings;
@@ -500,5 +530,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   refreshCampaign();
+
   setInterval(refreshCampaign, 5000);
 });
