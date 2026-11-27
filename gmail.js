@@ -22,38 +22,39 @@ const BIEmail = (() => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
 
-      reader.onload = () => {
-        const result = reader.result;
-        resolve(result.split(",")[1]);
-      };
-
+      reader.onload = () => resolve(reader.result.split(",")[1]);
       reader.onerror = () => reject(new Error("Could not read attachment."));
+
       reader.readAsDataURL(file);
     });
   }
 
-  function encodeSubject(subject) {
-    const bytes = new TextEncoder().encode(subject);
+  function encodeBase64(text) {
+    const bytes = new TextEncoder().encode(text);
     let binary = "";
 
     bytes.forEach(byte => {
       binary += String.fromCharCode(byte);
     });
 
-    return "=?UTF-8?B?" + btoa(binary) + "?=";
+    return btoa(binary);
+  }
+
+  function encodeSubject(subject) {
+    return "=?UTF-8?B?" + encodeBase64(subject) + "?=";
   }
 
   function wrapBase64(value) {
     return value.match(/.{1,76}/g)?.join("\r\n") || "";
   }
 
-  async function sendOneTest({ email, subject, message, photos = [] }) {
+  async function sendEmail({ email, subject, message, photos = [] }) {
     if (photos.length > 3) {
       throw new Error("Maximum 3 photos allowed.");
     }
 
     const token = await getToken();
-    const boundary = "BI_BOUNDARY_" + Date.now();
+    const boundary = "BI_BOUNDARY_" + crypto.randomUUID();
 
     let mime = [
       `To: ${email}`,
@@ -65,14 +66,7 @@ const BIEmail = (() => {
       'Content-Type: text/plain; charset="UTF-8"',
       "Content-Transfer-Encoding: base64",
       "",
-      wrapBase64(
-        btoa(
-          Array.from(
-            new TextEncoder().encode(message),
-            byte => String.fromCharCode(byte)
-          ).join("")
-        )
-      )
+      wrapBase64(encodeBase64(message))
     ].join("\r\n");
 
     for (const photo of photos) {
@@ -96,12 +90,7 @@ const BIEmail = (() => {
 
     mime += `\r\n--${boundary}--`;
 
-    const raw = btoa(
-      Array.from(
-        new TextEncoder().encode(mime),
-        byte => String.fromCharCode(byte)
-      ).join("")
-    )
+    const raw = encodeBase64(mime)
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/, "");
@@ -118,19 +107,30 @@ const BIEmail = (() => {
       }
     );
 
-    const data = await response.json();
+    const result = await response.json();
 
     if (!response.ok) {
       throw new Error(
-        data.error?.message || `Gmail API error: ${response.status}`
+        result.error?.message || `Gmail API error: ${response.status}`
       );
     }
 
     return {
       recipient: email,
-      messageId: data.id
+      messageId: result.id
     };
   }
 
-  return { sendOneTest };
+  async function sendOneTest(data) {
+    return sendEmail(data);
+  }
+
+  async function sendOneCampaignEmail(data) {
+    return sendEmail(data);
+  }
+
+  return {
+    sendOneTest,
+    sendOneCampaignEmail
+  };
 })();
