@@ -13,9 +13,9 @@
       margin: 0;
       font-family: Arial, sans-serif;
       background: #111;
-      color: #fff;
+      color: white;
     }
-    h2 { margin: 0 0 5px; color: #e5bd69; }
+    h2 { color: #e5bd69; margin: 0; }
     p { color: #bbb; font-size: 12px; }
     label { display: block; margin-top: 14px; font-size: 12px; }
     input, textarea, button {
@@ -26,36 +26,32 @@
       border: 1px solid #555;
     }
     input, textarea { background: #222; color: white; }
-    textarea { min-height: 100px; resize: vertical; }
+    textarea { min-height: 90px; resize: vertical; }
     button {
       background: #d6ad57;
       color: #111;
       font-weight: bold;
-      cursor: pointer;
       border: 0;
+      cursor: pointer;
     }
     button:disabled { opacity: .45; cursor: not-allowed; }
     .secondary { background: #444; color: white; }
     .danger { background: #a83232; color: white; }
     .consent { display: flex; gap: 8px; align-items: flex-start; }
     .consent input { width: auto; margin-top: 2px; }
-    #status, #campaignStatus {
-      margin-top: 12px;
-      font-size: 12px;
-      line-height: 1.5;
-      overflow-wrap: anywhere;
-    }
     .panel {
-      margin-top: 12px;
-      padding: 10px;
       background: #222;
       border: 1px solid #444;
       border-radius: 6px;
+      padding: 10px;
+      margin-top: 12px;
       font-size: 12px;
+      overflow-wrap: anywhere;
     }
     .actions { display: flex; gap: 8px; }
     .actions button { flex: 1; }
     progress { width: 100%; margin-top: 8px; }
+    #status, #campaignStatus { font-size: 12px; line-height: 1.5; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -66,37 +62,33 @@
   <input type="file" id="csvFile" accept=".csv">
 
   <div class="panel" id="csvSummary">
-    Upload your buyer CSV to preview recipients.
+    Upload buyer CSV to preview recipients.
   </div>
-
-  <label>Test Recipient Email</label>
-  <input type="email" id="testEmail" placeholder="Enter your own email first">
 
   <label>Email Subject</label>
   <input type="text" id="subject" placeholder="Enter email subject">
 
   <label>Email Message</label>
-  <textarea id="message" placeholder="Enter email message"></textarea>
+  <textarea id="message" placeholder="Use {name} for buyer name"></textarea>
 
   <label>Product Photos (Maximum 3)</label>
   <input type="file" id="photos" accept="image/*" multiple>
+
+  <label>Unsubscribed Emails (one email per line)</label>
+  <textarea id="suppressedEmails" placeholder="Enter addresses that opted out"></textarea>
 
   <button id="saveBtn" class="secondary">Save Draft Settings</button>
 
   <label class="consent">
     <input type="checkbox" id="permissionCheck">
-    <span>I confirm I am authorized to contact these relevant business recipients and will honor opt-out requests.</span>
+    <span>I confirm these are relevant business contacts I am authorized to contact, and I will honor opt-out requests.</span>
   </label>
-
-  <button id="testSendBtn">Send One Test Email</button>
 
   <div class="panel">
     <strong>Campaign Controls</strong>
     <div id="campaignStatus">No campaign started.</div>
     <progress id="campaignProgress" value="0" max="100"></progress>
-
-    <button id="startCampaignBtn" disabled>Start Campaign</button>
-
+    <button id="startCampaignBtn">Start Campaign</button>
     <div class="actions">
       <button id="pauseCampaignBtn" class="secondary" disabled>Pause</button>
       <button id="stopCampaignBtn" class="danger" disabled>Stop</button>
@@ -105,7 +97,6 @@
 
   <div id="status">Ready — no emails sent.</div>
 
-  <script src="gmail.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
