@@ -417,6 +417,8 @@ chrome.runtime.onStartup.addListener(async () => {
 
 chrome.runtime.onMessage.addListener(
   (message, sender, sendResponse) => {
+    console.log("[BI DEBUG] Message received:", message?.action);
+
     (async () => {
 
       if (message.action === "GET_CAMPAIGN") {
