@@ -550,6 +550,43 @@ chrome.runtime.onMessage.addListener(
         };
       }
 
+      // UPDATE CAMPAIGN ATTACHMENTS
+
+      if (message.action === "UPDATE_ATTACHMENTS") {
+        const campaign = await getCampaign();
+
+        if (!campaign || campaign.status !== "paused") {
+          throw new Error(
+            "Campaign must be paused before updating photos."
+          );
+        }
+
+        if (campaign.inFlight) {
+          throw new Error(
+            "An email is still in progress. Photos cannot be updated."
+          );
+        }
+
+        const attachments = validateAttachments(
+          message.attachments || []
+        );
+
+        if (!attachments.length) {
+          throw new Error("Select at least one product photo.");
+        }
+
+        campaign.attachments = attachments;
+        campaign.lastError = null;
+        campaign.nextSendAt = Date.now() + GAP_MS;
+
+        await saveCampaign(campaign);
+
+        return {
+          success: true,
+          attachmentCount: attachments.length
+        };
+      }
+
       // PAUSE
 
       if (message.action === "PAUSE_CAMPAIGN") {
