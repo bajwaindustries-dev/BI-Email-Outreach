@@ -1,9 +1,15 @@
 
 const ALARM_NAME = "bi-next-email";
 const CAMPAIGN_KEY = "biCampaign";
+const SENT_HISTORY_KEY = "biSentEmails";
+
 const GAP_MS = 240000; // 4 minutes
+const MAX_PHOTOS = 3;
+const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 
 let isProcessing = false;
+
+// ---------------- STORAGE ----------------
 
 async function getCampaign() {
   const data = await chrome.storage.local.get(CAMPAIGN_KEY);
@@ -16,19 +22,53 @@ async function saveCampaign(campaign) {
   });
 }
 
-function base64Url(text) {
-  const bytes = new TextEncoder().encode(text);
+async function getSentHistory() {
+  const data = await chrome.storage.local.get(SENT_HISTORY_KEY);
+  return data[SENT_HISTORY_KEY] || [];
+}
+
+async function addToSentHistory(email) {
+  const history = await getSentHistory();
+
+  if (!history.includes(email)) {
+    history.push(email);
+    await chrome.storage.local.set({
+      [SENT_HISTORY_KEY]: history
+    });
+  }
+}
+
+// ---------------- ENCODING ----------------
+
+function bytesToBase64(bytes) {
   let binary = "";
+  const chunkSize = 8192;
 
-  bytes.forEach(byte => {
-    binary += String.fromCharCode(byte);
-  });
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(i, i + chunkSize)
+    );
+  }
 
-  return btoa(binary)
+  return btoa(binary);
+}
+
+function base64Url(text) {
+  return bytesToBase64(
+    new TextEncoder().encode(text)
+  )
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 }
+
+function encodeText(text) {
+  return bytesToBase64(
+    new TextEncoder().encode(text)
+  ).replace(/.{1,76}/g, "$&\r\n").trim();
+}
+
+// ---------------- GMAIL AUTH ----------------
 
 async function getAccessToken() {
   return new Promise((resolve, reject) => {
@@ -57,8 +97,64 @@ async function getAccessToken() {
   });
 }
 
-async function sendEmail(recipient, subject, message) {
+// ---------------- ATTACHMENTS ----------------
+
+function validateAttachments(attachments) {
+  if (!Array.isArray(attachments)) {
+    throw new Error("Invalid photo attachment list.");
+  }
+
+  if (attachments.length > MAX_PHOTOS) {
+    throw new Error("Maximum 3 product photos are allowed.");
+  }
+
+  let totalBytes = 0;
+
+  for (const file of attachments) {
+    if (
+      !file ||
+      typeof file.dataUrl !== "string" ||
+      typeof file.name !== "string"
+    ) {
+      throw new Error("Invalid photo attachment.");
+    }
+
+    const match = file.dataUrl.match(
+      /^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/=]+)$/
+    );
+
+    if (!match) {
+      throw new Error(
+        "Only JPEG, PNG, GIF and WebP photos are supported."
+      );
+    }
+
+    const base64 = match[2];
+
+    if (base64.length % 4 !== 0) {
+      throw new Error("Invalid photo data.");
+    }
+
+    totalBytes += Math.floor(base64.length * 3 / 4);
+  }
+
+  if (totalBytes > MAX_ATTACHMENT_BYTES) {
+    throw new Error("Total photo size must not exceed 3 MB.");
+  }
+
+  return attachments;
+}
+
+// ---------------- EMAIL SENDING ----------------
+
+async function sendEmail(recipient, subject, message, attachments = []) {
   const token = await getAccessToken();
+
+  const safeEmail = recipient.email.trim().toLowerCase();
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(safeEmail)) {
+    throw new Error("Invalid recipient email address.");
+  }
 
   const safeSubject = subject.replace(/[\r\n]/g, " ");
 
@@ -67,15 +163,68 @@ async function sendEmail(recipient, subject, message) {
     recipient.name || "there"
   );
 
-  const mime = [
-    `To: ${recipient.email}`,
-    `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(safeSubject)))}?=`,
-    "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: base64",
-    "",
-    btoa(unescape(encodeURIComponent(personalized)))
-  ].join("\r\n");
+  const encodedSubject = bytesToBase64(
+    new TextEncoder().encode(safeSubject)
+  );
+
+  const headers = [
+    `To: ${safeEmail}`,
+    `Subject: =?UTF-8?B?${encodedSubject}?=`,
+    "MIME-Version: 1.0"
+  ];
+
+  let mime;
+
+  if (!attachments.length) {
+    mime = [
+      ...headers,
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      encodeText(personalized)
+    ].join("\r\n");
+  } else {
+    const boundary = "BI_BOUNDARY_" +
+      Date.now() + "_" +
+      Math.random().toString(36).slice(2);
+
+    const parts = [
+      ...headers,
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      encodeText(personalized)
+    ];
+
+    for (const file of attachments) {
+      const match = file.dataUrl.match(
+        /^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/
+      );
+
+      const mimeType = match[1];
+      const base64 = match[2];
+
+      const filename = file.name
+        .replace(/[^a-zA-Z0-9._-]/g, "_")
+        .slice(0, 100) || "product-photo";
+
+      parts.push(
+        `--${boundary}`,
+        `Content-Type: ${mimeType}; name="${filename}"`,
+        "Content-Transfer-Encoding: base64",
+        `Content-Disposition: attachment; filename="${filename}"`,
+        "",
+        base64.replace(/.{1,76}/g, "$&\r\n").trim()
+      );
+    }
+
+    parts.push(`--${boundary}--`);
+
+    mime = parts.join("\r\n");
+  }
 
   const response = await fetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
@@ -102,6 +251,8 @@ async function sendEmail(recipient, subject, message) {
   return result.id;
 }
 
+// ---------------- SCHEDULING ----------------
+
 async function scheduleNext(timestamp) {
   await chrome.alarms.clear(ALARM_NAME);
 
@@ -114,6 +265,8 @@ async function scheduleNext(timestamp) {
     delayInMinutes: delay
   });
 }
+
+// ---------------- CAMPAIGN PROCESSOR ----------------
 
 async function processNext() {
   if (isProcessing) return;
@@ -140,8 +293,11 @@ async function processNext() {
       const recipient = campaign.recipients[campaign.nextIndex];
       const email = recipient.email.toLowerCase();
 
+      const history = await getSentHistory();
+
       if (
         campaign.sentEmails.includes(email) ||
+        history.includes(email) ||
         campaign.suppressedEmails.includes(email)
       ) {
         campaign.nextIndex++;
@@ -161,10 +317,10 @@ async function processNext() {
         const messageId = await sendEmail(
           recipient,
           campaign.subject,
-          campaign.message
+          campaign.message,
+          campaign.attachments || []
         );
 
-        // Latest saved campaign read karo taake Pause/Stop overwrite na ho.
         const latest = await getCampaign();
 
         if (!latest) return;
@@ -173,9 +329,12 @@ async function processNext() {
           latest.sentEmails.push(email);
         }
 
+        await addToSentHistory(email);
+
         latest.lastMessageId = messageId;
         latest.lastSentAt = Date.now();
         latest.inFlight = null;
+
         latest.nextIndex = Math.max(
           latest.nextIndex,
           campaign.nextIndex + 1
@@ -225,11 +384,15 @@ async function processNext() {
   }
 }
 
+// ---------------- ALARM ----------------
+
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM_NAME) {
     processNext();
   }
 });
+
+// ---------------- BROWSER RESTART ----------------
 
 chrome.runtime.onStartup.addListener(async () => {
   const campaign = await getCampaign();
@@ -250,6 +413,8 @@ chrome.runtime.onStartup.addListener(async () => {
   );
 });
 
+// ---------------- MESSAGE HANDLER ----------------
+
 chrome.runtime.onMessage.addListener(
   (message, sender, sendResponse) => {
     (async () => {
@@ -260,6 +425,8 @@ chrome.runtime.onMessage.addListener(
           campaign: await getCampaign()
         };
       }
+
+      // START CAMPAIGN
 
       if (message.action === "START_CAMPAIGN") {
         const existing = await getCampaign();
@@ -292,9 +459,17 @@ chrome.runtime.onMessage.addListener(
         const subject = String(message.subject || "").trim();
         const body = String(message.message || "").trim();
 
-        const suppressedEmails = (message.suppressedEmails || [])
-          .map(email => String(email).trim().toLowerCase())
-          .filter(Boolean);
+        const suppressedEmails = [
+          ...new Set(
+            (message.suppressedEmails || [])
+              .map(email => String(email).trim().toLowerCase())
+              .filter(Boolean)
+          )
+        ];
+
+        const attachments = validateAttachments(
+          message.attachments || []
+        );
 
         if (
           message.permission !== true ||
@@ -315,11 +490,20 @@ chrome.runtime.onMessage.addListener(
           );
         }
 
+        const invalid = emails.find(
+          email => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+        );
+
+        if (invalid) {
+          throw new Error("Invalid recipient email: " + invalid);
+        }
+
         const campaign = {
           status: "running",
           recipients,
           subject,
           message: body,
+          attachments,
           nextIndex: 0,
           sentEmails: [],
           suppressedEmails,
@@ -336,24 +520,64 @@ chrome.runtime.onMessage.addListener(
         };
       }
 
+      // UPDATE UNSUBSCRIBE LIST
+
+      if (message.action === "UPDATE_SUPPRESSION") {
+        const campaign = await getCampaign();
+
+        if (!campaign) {
+          throw new Error("No saved campaign found.");
+        }
+
+        const additions = (message.emails || [])
+          .map(email => String(email).trim().toLowerCase())
+          .filter(email =>
+            /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+          );
+
+        campaign.suppressedEmails = [
+          ...new Set([
+            ...(campaign.suppressedEmails || []),
+            ...additions
+          ])
+        ];
+
+        await saveCampaign(campaign);
+
+        return {
+          success: true,
+          suppressedCount: campaign.suppressedEmails.length
+        };
+      }
+
+      // PAUSE
+
       if (message.action === "PAUSE_CAMPAIGN") {
         const campaign = await getCampaign();
 
-        if (campaign) {
-          campaign.status = "paused";
-          await saveCampaign(campaign);
+        if (!campaign || campaign.status !== "running") {
+          throw new Error("No running campaign to pause.");
         }
+
+        campaign.status = "paused";
+        await saveCampaign(campaign);
 
         await chrome.alarms.clear(ALARM_NAME);
 
         return { success: true };
       }
 
+      // RESUME
+
       if (message.action === "RESUME_CAMPAIGN") {
         const campaign = await getCampaign();
 
         if (!campaign) {
           throw new Error("No saved campaign found.");
+        }
+
+        if (campaign.status !== "paused") {
+          throw new Error("Only a paused campaign can be resumed.");
         }
 
         if (campaign.inFlight) {
@@ -372,13 +596,17 @@ chrome.runtime.onMessage.addListener(
         return { success: true };
       }
 
+      // STOP
+
       if (message.action === "STOP_CAMPAIGN") {
         const campaign = await getCampaign();
 
-        if (campaign) {
-          campaign.status = "stopped";
-          await saveCampaign(campaign);
+        if (!campaign) {
+          throw new Error("No saved campaign found.");
         }
+
+        campaign.status = "stopped";
+        await saveCampaign(campaign);
 
         await chrome.alarms.clear(ALARM_NAME);
 
